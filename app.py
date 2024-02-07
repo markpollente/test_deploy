@@ -9,12 +9,9 @@ from flask_cors import CORS
 from flask_session import Session
 from collections import Counter
 
-
-
-#import random  # Only if you need to simulate data collection
 app = Flask(__name__)
 CORS(app)
-app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'  # Replace with a secure secret key
+app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'
 app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
 
@@ -35,9 +32,9 @@ cred = credentials.Certificate(firebase_creds)
 firebase_admin.initialize_app(cred, {
     'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
 })
-# Global variables
+
 current_state = None
-collected_data = []  # To store data collected during calibration
+collected_data = []
 calibration_data_global = {}
 
 def retrieve_calibration_data(training_id):
