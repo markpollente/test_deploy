@@ -45,17 +45,20 @@ connection_lock = threading.Lock()
 collected_data = []  # To store data collected during calibration
 calibration_data_global={}
 
+@app.route('/api/set-comport', methods=['POST'])
 def set_comport():
     global com_port
     data = request.json
     if not data or 'comport' not in data:
-        abort(400, 'Please provide the comport value.')
+        return jsonify({"error": "Please provide the comport value."}), 400
 
     com_port = data['comport']
     print(f"COM port set to: {com_port}")
     # Here you could add logic to initialize the Bluetooth connection using the new COM port
 
     return jsonify({"message": "COM port set successfully.", "comport": com_port})
+
+
 
 def bluetooth_communication():
     global start_time, current_state, bluetooth_connected, bluetooth_serial, collected_data
