@@ -1,13 +1,15 @@
-from flask import Flask, jsonify, request, session
-from flask_cors import CORS
+import os
 import threading
+import serial
 import time
 import firebase_admin
 from firebase_admin import credentials, db
+from flask import Flask, jsonify, request, session
+from flask_cors import CORS
 from flask_session import Session
 from collections import Counter
 
-NGROK_URL = 'https://b988-130-105-3-245.ngrok-free.app'
+
 
 #import random  # Only if you need to simulate data collection
 app = Flask(__name__)
@@ -16,12 +18,23 @@ app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'  # Replace with a 
 app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
 
-# Firebase Admin SDK initialization
-cred = credentials.Certificate('C:/Users/Lou Gesite\PycharmProjects/test123/pd-test.json')
-firebase_admin.initialize_app(cred, {
-    'databaseURL': 'https://pd-test-b7811-default-rtdb.asia-southeast1.firebasedatabase.app'
-})
+firebase_creds = {
+    "type": os.getenv("FIREBASE_TYPE"),
+    "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+    "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+    "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace('\\n', '\n'),
+    "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+    "client_id": os.getenv("FIREBASE_CLIENT_ID"),
+    "auth_uri": os.getenv("FIREBASE_AUTH_URI"),
+    "token_uri": os.getenv("FIREBASE_TOKEN_URI"),
+    "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL"),
+    "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL")
+}
 
+cred = credentials.Certificate(firebase_creds)
+firebase_admin.initialize_app(cred, {
+    'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
+})
 # Global variables
 current_state = None
 collected_data = []  # To store data collected during calibration
