@@ -8,7 +8,6 @@ from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 from flask_session import Session
 from collections import Counter
-from dotenv import load_dotenv
 
 
 #import random  # Only if you need to simulate data collection
@@ -19,7 +18,6 @@ app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'  # Replace with a 
 app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
 
-load_dotenv()
 
 firebase_creds = {
     "type": os.getenv("FIREBASE_TYPE"),
