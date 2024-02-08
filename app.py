@@ -8,13 +8,18 @@ from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 from flask_session import Session
 from collections import Counter
+from dotenv import load_dotenv
 
+
+#import random  # Only if you need to simulate data collection
 app = Flask(__name__)
 CORS(app)
 
 app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'  # Replace with a secure secret key
 app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
+
+load_dotenv()
 
 firebase_creds = {
     "type": os.getenv("FIREBASE_TYPE"),
@@ -28,7 +33,6 @@ firebase_creds = {
     "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL"),
     "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL")
 }
-
 cred = credentials.Certificate(firebase_creds)
 firebase_admin.initialize_app(cred, {
     'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
@@ -40,32 +44,18 @@ bluetooth_thread = None
 start_time = None
 bluetooth_connected = False
 bluetooth_serial = None
-com_port = None
 connection_lock = threading.Lock()
 collected_data = []  # To store data collected during calibration
 calibration_data_global={}
-
-@app.route('/api/set-comport', methods=['POST'])
-def set_comport():
-    global com_port
-    data = request.json
-    if not data or 'comport' not in data:
-        return jsonify({"error": "Please provide the comport value."}), 400
-
-    com_port = data['comport']
-    print(f"COM port set to: {com_port}")
-    # Here you could add logic to initialize the Bluetooth connection using the new COM port
-
-    return jsonify({"message": "COM port set successfully.", "comport": com_port})
-
-
+should_save_thresholds = False  # Flag to control saving of thresholds
+com_port = None
 
 def bluetooth_communication():
     global start_time, current_state, bluetooth_connected, bluetooth_serial, collected_data
     try:
         with connection_lock:
             if bluetooth_serial is None or not bluetooth_connected:
-                # Use the com_port variable to open the serial connection
+                # Attempt to connect to the Bluetooth device
                 bluetooth_serial = serial.Serial(com_port, 9600, timeout=0.1)
                 print(f"Connected to Bluetooth device on {com_port}")
                 bluetooth_connected = True
@@ -115,25 +105,28 @@ def read_and_store_data():
                 sensor_name = sensor_names[i]
                 sensor_ranges = calibration_data_global.get(sensor_name, {})
 
+
                 if current_state == 3:
                     # Process and categorize data in state 3
                     category = convert_to_category(value, sensor_ranges)
-                    categorized_data.append((value, category))
+                    categorized_data.append((sensor_name, value, category))  # Include sensor_name in the tuple
                 if i < len(collected_data):
                     collected_data[i].append(value)
                 else:
                     print(f"Warning: Received more sensor values than expected ({len(sensor_values)}).")
 
             if current_state == 3:
+                for sensor_name, value, category in categorized_data:
 
-                print(f"Categorized Data: {categorized_data}")
+
+                    print(f"{sensor_name}: Value: {value}, Category: {category}")
             elif current_state == 1:
                 pass
 
 
 # Retrieve calibration data from Firebase
 def retrieve_calibration_data(training_id):
-    ref = db.reference(f'/users/{session.get("user_id")}/Training/{training_id}/Thresholds')
+    ref = db.reference(f'users/{session.get("user_id")}/Calibration/Training/{training_id}/Thresholds')
     calibration_data_global = ref.get()
     if calibration_data_global:
         print("Calibration data retrieved successfully.")
@@ -158,8 +151,6 @@ def convert_to_category(value, ranges):
     except KeyError as e:
         print(f"KeyError accessing range: {e}, with ranges: {ranges}")
         raise  # Re-raise the exception or handle it as appropriate
-
-
 
 def start_bluetooth_thread():
     global bluetooth_thread, start_time
@@ -193,7 +184,8 @@ def receive_user_data():
     return jsonify({"status": "success", "message": "User data received successfully."})
 
 def calibration_mode():
-    global collected_data, user_id, training_id
+    global collected_data, user_id, training_id, should_save_thresholds, thresholds
+
     if not collected_data or not all(collected_data):
         print("No data collected.")
         return
@@ -259,14 +251,29 @@ def calibration_mode():
             'medium': new_medium_range,
             'high': new_high_range
         }
-    if user_id:
+
+
+@app.route('/confirm-save', methods=['POST'])
+def confirm_save():
+    global should_save_thresholds, user_id, training_id, thresholds
+    if should_save_thresholds and user_id:
+        print("Saving calibration data based on user confirmation.")
         save_thresholds_to_firebase(user_id, training_id, thresholds)
+        should_save_thresholds = False  # Reset flag after saving
+        return jsonify({"message": "Calibration data saved successfully."})
     else:
-        print("No current user ID set.")
+        return jsonify({"message": "Save operation not authorized or no data to save."}), 400
+
+@app.route('/set-save-flag', methods=['POST'])
+def set_save_flag():
+    global should_save_thresholds
+    data = request.json
+    should_save_thresholds = data.get('save', False)
+    return jsonify({"message": "Flag set successfully", "shouldSave": should_save_thresholds})
 
 
 def save_thresholds_to_firebase(user_id, training_id, thresholds):
-    ref = db.reference(f'/users/{user_id}/Training/{training_id}')
+    ref = db.reference(f'/users/{user_id}/Calibration/Training/{training_id}')
     ref.update({
         'Thresholds': thresholds
     })
