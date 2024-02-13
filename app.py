@@ -8,6 +8,7 @@ from firebase_admin import credentials, db
 from flask_session import Session
 from collections import Counter
 import logging
+import os
 
 #import random  # Only if you need to simulate data collection
 app = Flask(__name__)
