@@ -52,6 +52,7 @@ bluetooth_connected = False
 bluetooth_serial = None
 connection_lock = threading.Lock()
 collected_data = []  # To store data collected during c@app.route('/receive-data', methods=['POST'])
+data_processing_ready = True
 '''def receive_data():
     global collected_data, current_state
 
@@ -456,14 +457,11 @@ def reset_timer():
 
 @app.route('/establish-connection', methods=['POST'])
 def establish_connection():
-    global data_processing_ready
-    data_processing_ready = True
     # start_bluetooth_thread()
     return jsonify({'message': 'Attempting to establish connection'})
 
 @app.route('/connection-status', methods=['GET'])
 def connection_status():
-    global data_processing_ready
     with connection_lock:
         return jsonify({'connected': data_processing_ready})
 
