@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, session
+sfrom flask import Flask, jsonify, request, session
 from flask_cors import CORS
 import threading
 import serial
@@ -352,7 +352,7 @@ def receive_data():
         if current_state == 1:
             if 'state_1_start_time' not in start_time_dict:
                 start_time_dict['state_1_start_time'] = time.time()
-            elif time.time() - start_time_dict['state_1_start_time'] > 10:
+            elif time.time() - start_time_dict['state_1_start_time'] > 30:
                 print(f"Data reception in state 1 halted as 10 seconds have elapsed.")
                 return jsonify({"error": "Data reception halted for state 1 as time window has elapsed."}), 403
 
