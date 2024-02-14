@@ -1,4 +1,4 @@
-sfrom flask import Flask, jsonify, request, session
+from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 import threading
 import serial
