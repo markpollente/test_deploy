@@ -254,7 +254,7 @@ def save_thresholds_to_firebase(user_id, training_id, thresholds):
 #Saving each data point during training
 def save_trainmode_to_firebase(session, user_id, training_id,sensor_name, value, category):
     # Define the Firebase reference path based on category
-    ref_path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}/{category}'
+    ref_path = f'/users/{user_id}/Training/{training_id}/{sensor_name}/{category}'
     ref = db.reference(ref_path)
 
     # Save data point with a timestamp as the key or any unique identifier
