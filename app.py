@@ -254,7 +254,7 @@ def save_thresholds_to_firebase(user_id, training_id, thresholds):
 #Saving each data point during training
 def save_trainmode_to_firebase(session, user_id, training_id,sensor_name, value, category):
     # Define the Firebase reference path based on category
-    ref_path = f'/users/{user_id}/Training/{training_id}/{sensor_name}/{category}'
+    ref_path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}/{category}'
     ref = db.reference(ref_path)
 
     # Save data point with a timestamp as the key or any unique identifier
@@ -266,7 +266,7 @@ def save_trainmode_to_firebase(session, user_id, training_id,sensor_name, value,
 
 def fetch_high_counts_for_muscle_group(training_id, sensor_name, category="HIGH"):
     # Construct the path to the muscle group data
-    path = f'/users/{user_id}/Training/{training_id}/{sensor_name}/HIGH'
+    path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}/HIGH'
 
     # Get a reference to the Firebase Realtime Database
     ref = db.reference(path)
@@ -293,7 +293,7 @@ def calculate_percentage_high(training_ID, sensor_name):
 
 def fetch_total_counts(training_id, sensor_name):
     # Construct the path to the muscle group data
-    path = f'/users/{user_id}/Training/{training_id}/{sensor_name}'
+    path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}'
 
     # Get a reference to the Firebase Realtime Database
     ref = db.reference(path)
@@ -327,7 +327,7 @@ def main_function():
         print(f"{sensor_name}: {percentage:.2f}% HIGH")
 def save_post_analysis_results(session_id, analysis_data):
     # Save the post-analysis data to Firebase under the session ID
-    results_ref = db.reference(f'Training/{session_id}/post_analysis_results')
+    results_ref = db.reference(f'TrainingMode/{session_id}/post_analysis_results')
     results_ref.set(analysis_data)
 
 
