@@ -5,3 +5,4 @@ Flask-Session
 pyserial
 gunicorn
 Werkzeug
+scipy
