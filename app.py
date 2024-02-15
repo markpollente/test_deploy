@@ -8,7 +8,10 @@ from firebase_admin import credentials, db
 from flask_session import Session
 from collections import Counter
 import logging
-import os
+from scipy.signal import welch
+from scipy.integrate import cumtrapz
+from collections import deque
+
 
 #import random  # Only if you need to simulate data collection
 app = Flask(__name__)
@@ -35,6 +38,7 @@ firebase_admin.initialize_app(cred, {
     'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
 })
 
+
 # Define your training goals for each training type
 training_goals = {
     'seated_climbing': ['quads_r', 'quads_l', 'hams_r', 'hams_l', 'glutes_r', 'glutes_l'],
@@ -52,7 +56,9 @@ bluetooth_connected = False
 bluetooth_serial = None
 connection_lock = threading.Lock()
 collected_data = []  # To store data collected during c@app.route('/receive-data', methods=['POST'])
-data_processing_ready = True
+sensor_names = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
+sensor_buffers = {name: deque(maxlen=1000) for name in ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']}
+
 '''def receive_data():
     global collected_data, current_state
 
@@ -109,7 +115,7 @@ def read_and_store_data(sensor_values=None):
     global collected_data, calibration_data_global, current_state
     if sensor_values is None:
         sensor_values = []
-    sensor_names = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
+
     num_sensors = len(sensor_names)
 
     # Log the received sensor values for debugging
@@ -159,6 +165,8 @@ def convert_to_category(value, ranges):
     try:
         if not ranges:
             raise ValueError(f"Empty ranges provided for value: {value}")
+
+        # Assuming 'ranges' contains 'low', 'medium', and 'high' keys with their respective value ranges.
         if value >= ranges['high'][0] and value <= ranges['high'][1]:
             return 'HIGH'
         elif value >= ranges['medium'][0] and value <= ranges['medium'][1]:
@@ -167,6 +175,7 @@ def convert_to_category(value, ranges):
             return 'LOW'
         else:
             return 'NOT ACTIVATED'
+
     except KeyError as e:
         print(f"KeyError accessing range: {e}, with ranges: {ranges}")
         raise  # Re-raise the exception or handle it as appropriate
@@ -266,7 +275,7 @@ def save_trainmode_to_firebase(session, user_id, training_id,sensor_name, value,
 
 def fetch_high_counts_for_muscle_group(training_id, sensor_name, category="HIGH"):
     # Construct the path to the muscle group data
-    path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}/HIGH'
+    path = f'/users/{user_id}/Training/{training_id}/{sensor_name}/HIGH'
 
     # Get a reference to the Firebase Realtime Database
     ref = db.reference(path)
@@ -293,7 +302,7 @@ def calculate_percentage_high(training_ID, sensor_name):
 
 def fetch_total_counts(training_id, sensor_name):
     # Construct the path to the muscle group data
-    path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}'
+    path = f'/users/{user_id}/Training/{training_id}/{sensor_name}'
 
     # Get a reference to the Firebase Realtime Database
     ref = db.reference(path)
@@ -327,56 +336,79 @@ def main_function():
         print(f"{sensor_name}: {percentage:.2f}% HIGH")
 def save_post_analysis_results(session_id, analysis_data):
     # Save the post-analysis data to Firebase under the session ID
-    results_ref = db.reference(f'TrainingMode/{session_id}/post_analysis_results')
+    results_ref = db.reference(f'Training/{session_id}/post_analysis_results')
     results_ref.set(analysis_data)
 
+def calculate_median_frequency(segment):
+    fs = 1000  # Sampling frequency
+    f, Pxx = welch(segment, fs=fs, window='hanning', nperseg=len(segment), noverlap=len(segment)//2)
+    cumsum = np.cumsum(Pxx)
+    total_power = cumsum[-1]
+    median_freq = f[np.searchsorted(cumsum, total_power / 2)]
+    return median_freq
 
 @app.route('/receive-data', methods=['POST'])
 def receive_data():
-    global collected_data, current_state, start_time_dict
-    sensor_names = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
+    global collected_data, current_state, calibration_data_global, sensor_buffers
 
-    # Check current state at the very beginning
+    # Check the current state at the very beginning
     if current_state not in [1, 3]:
         return jsonify({"error": "Not ready to receive data. Current state does not allow data reception."}), 403
 
+    # Fetching data from request
     data = request.get_json()
     if 'sensor_values' not in data:
         return jsonify({"error": "Missing sensor_values"}), 400
 
+    # Processing sensor values
     sensor_values_string = data['sensor_values']
     sensor_values = [int(val) for val in sensor_values_string.split('/') if val.isdigit()]
 
-    with connection_lock:
-        # Check the state and process accordingly
-        if current_state == 1:
-            if 'state_1_start_time' not in start_time_dict:
-                start_time_dict['state_1_start_time'] = time.time()
-            elif time.time() - start_time_dict['state_1_start_time'] > 30:
-                print(f"Data reception in state 1 halted as 10 seconds have elapsed.")
-                return jsonify({"error": "Data reception halted for state 1 as time window has elapsed."}), 403
+    # Ensuring that we receive data for all sensors
+    if len(sensor_values) != len(sensor_names):
+        return jsonify({"error": f"Expected {len(sensor_names)} sensor values, received {len(sensor_values)}"}), 400
 
-        elif current_state == 3:
-            # Process and categorize data in state 3
-            categorized_data = []
-            for i, value in enumerate(sensor_values):
-                sensor_name = sensor_names[i]
-                sensor_ranges = calibration_data_global.get(sensor_name, {})
-                category = convert_to_category(value, sensor_ranges)
-                categorized_data.append((sensor_name, value, category))  # Include sensor_name in the tuple
-                # Save to Firebase in real-time
-                save_trainmode_to_firebase(session, user_id, training_id, sensor_name, value, category)
-            print(f"Processing data in state 3: {sensor_values}")
+    # Variable to store median frequencies
+    median_frequencies = {}
 
-        else:
-            return jsonify({"error": "Data not processed due to current state restrictions."}), 403
+    # State 3 processing
+    if current_state == 3:
+        categorized_data = []
+        for i, value in enumerate(sensor_values):
+            sensor_name = sensor_names[i % len(sensor_names)]
+            sensor_ranges = calibration_data_global.get(sensor_name, {})
+            category = convert_to_category(value, sensor_ranges)
+            categorized_data.append((sensor_name, value, category))
 
-        collected_data.append(sensor_values)
-        if current_state == 3:
-            for sensor_name, value, category in categorized_data:
-                print(f"Saved {sensor_name} data to Firebase under {category.upper()} category.")
+            # Saving to Firebase could be a separate function call
+            save_trainmode_to_firebase(session, user_id, training_id, sensor_name, value, category)
 
-        return jsonify({"status": "success", "message": "Data received and processed."})
+            # Append the current value to the respective sensor buffer for median frequency calculation
+            sensor_buffers[sensor_name].append(value)
+
+            # Check if enough data is collected to calculate median frequency
+            if len(sensor_buffers[sensor_name]) == 1000:  # Assuming 1000 samples represent 1 second of data
+                median_freq = calculate_median_frequency(list(sensor_buffers[sensor_name]))
+                median_frequencies[sensor_name] = median_freq
+
+                # After calculating the median frequency, reset the buffer
+                sensor_buffers[sensor_name].clear()
+
+        # Output categorized data to the console or log
+        for sensor_name, value, category in categorized_data:
+            print(f"{sensor_name}: Value: {value}, Category: {category}")
+
+    # Append the new sensor values to the collected_data list
+    collected_data.append(sensor_values)
+
+    # Return a success response with any median frequencies calculated
+    return jsonify({
+        "status": "success",
+        "message": "Data received and processed.",
+        "median_frequencies": median_frequencies if median_frequencies else "Insufficient data for median frequency calculation"
+    })
+
+# Define your Flask app setup and other routes here
 @app.route('/api/userId', methods=['POST'])
 def receive_user_data():
     global user_id, training_id
@@ -426,7 +458,7 @@ def start_calibration():
     threading.Thread(target=collect_data).start()
     return jsonify({"message": "Calibration started."})
 
-@app.route('/stop-and-process', methods=['POST'])
+'''@app.route('/stop-and-process', methods=['POST'])
 def stop_and_process():
         # Assume the POST request includes the session ID for identifying the training session
         data = request.get_json()
@@ -443,7 +475,7 @@ def stop_and_process():
         save_post_analysis_results(session_id, percentages)
 
         # Return the analysis results
-        return jsonify({"message": "Post-analysis completed.", "percentages": percentages})
+        return jsonify({"message": "Post-analysis completed.", "percentages": percentages})'''
 
 
 @app.route('/reset-timer', methods=['POST'])
@@ -457,11 +489,14 @@ def reset_timer():
 
 @app.route('/establish-connection', methods=['POST'])
 def establish_connection():
+    global data_processing_ready
+    data_processing_ready = True
     # start_bluetooth_thread()
     return jsonify({'message': 'Attempting to establish connection'})
 
 @app.route('/connection-status', methods=['GET'])
 def connection_status():
+    global data_processing_ready
     with connection_lock:
         return jsonify({'connected': data_processing_ready})
 
@@ -494,18 +529,25 @@ def set_state_2():
 def set_state_3():
     global current_state, collected_data, calibration_data_global
     data = request.json
-    training_id = data.get('trainingType')
+    print("Data received in set-state-3:", data)  # Debug print
+
+    training_type = data.get('trainingType')
+    print("Training type received:", training_type)  # Debug print
+
+    if not training_type:
+        return jsonify({"error": "Missing training type in request."}), 400
 
     # Retrieve calibration data for the selected training type
-    calibration_data_global = retrieve_calibration_data(training_id)
+    calibration_data_global = retrieve_calibration_data(training_type)
 
     if not calibration_data_global:
-        return jsonify({"message": "Failed to retrieve calibration data or invalid training type."}), 400
+        return jsonify({"error": "Failed to retrieve calibration data or invalid training type."}), 400
 
-    current_state = 3  # Assuming state 4 is for training mode
+    current_state = 3
     collected_data = [[] for _ in range(6)]  # Reset collected data for new session
     start_bluetooth_thread()  # Ensure Bluetooth thread is running
-    return jsonify({'message': 'Training mode started, calibration data retrieved'})
+    return jsonify({'message': 'State 3 set, training mode started, calibration data retrieved'})
+
 
 
 @app.route('/get-state', methods=['GET'])
