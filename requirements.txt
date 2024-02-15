@@ -6,3 +6,4 @@ pyserial
 gunicorn
 Werkzeug
 scipy
+json
