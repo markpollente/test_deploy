@@ -1,7 +1,6 @@
 from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 import threading
-import serial
 import time
 import firebase_admin
 from firebase_admin import credentials, db
@@ -11,6 +10,8 @@ import logging
 from scipy.signal import welch
 from scipy.integrate import cumtrapz
 from collections import deque
+import os
+import json
 
 
 #import random  # Only if you need to simulate data collection
@@ -20,10 +21,11 @@ app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'  # Replace with a 
 app.config['SESSION_TYPE'] = 'filesystem'
 Session(app)
 
-firebase_creds = {
+firebase_creds_json = json.dumps({
     "type": os.getenv("FIREBASE_TYPE"),
     "project_id": os.getenv("FIREBASE_PROJECT_ID"),
     "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID"),
+    # Replace the escaped newline characters with actual newlines
     "private_key": os.getenv("FIREBASE_PRIVATE_KEY").replace('\\n', '\n'),
     "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
     "client_id": os.getenv("FIREBASE_CLIENT_ID"),
@@ -31,12 +33,17 @@ firebase_creds = {
     "token_uri": os.getenv("FIREBASE_TOKEN_URI"),
     "auth_provider_x509_cert_url": os.getenv("FIREBASE_AUTH_PROVIDER_X509_CERT_URL"),
     "client_x509_cert_url": os.getenv("FIREBASE_CLIENT_X509_CERT_URL")
-}
+})
 
+# Convert the JSON string back into a dictionary
+firebase_creds = json.loads(firebase_creds_json)
+
+# Now pass this dictionary to credentials.Certificate()
 cred = credentials.Certificate(firebase_creds)
 firebase_admin.initialize_app(cred, {
     'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
 })
+
 
 
 # Define your training goals for each training type
