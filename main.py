@@ -11,6 +11,7 @@ from scipy.signal import welch
 import os
 #import json
 import numpy as np
+#hi
 
 #import random  # Only if you need to simulate data collection
 app = Flask(__name__)
