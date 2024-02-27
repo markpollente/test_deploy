@@ -9,7 +9,7 @@ from collections import Counter
 import logging
 from scipy.signal import welch
 import os
-import json
+#import json
 import numpy as np
 
 #import random  # Only if you need to simulate data collection
@@ -35,7 +35,7 @@ firebase_creds_json = json.dumps({
 })
 
 # Convert the JSON string back into a dictionary
-firebase_creds = json.loads(firebase_creds_json)
+#firebase_creds = json.loads(firebase_creds_json)
 
 # Now pass this dictionary to credentials.Certificate()
 cred = credentials.Certificate(firebase_creds)
