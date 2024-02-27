@@ -8,17 +8,16 @@ from flask_session import Session
 from collections import Counter
 import logging
 from scipy.signal import welch
-from scipy.integrate import cumtrapz
-from collections import deque
 import os
 import json
-
+import numpy as np
 
 #import random  # Only if you need to simulate data collection
 app = Flask(__name__)
 CORS(app)
 app.config['SECRET_KEY'] = '31a6d43a34178b9d483370a095e426d2'  # Replace with a secure secret key
 app.config['SESSION_TYPE'] = 'filesystem'
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 Session(app)
 
 firebase_creds_json = json.dumps({
@@ -44,15 +43,6 @@ firebase_admin.initialize_app(cred, {
     'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
 })
 
-
-
-# Define your training goals for each training type
-training_goals = {
-    'seated_climbing': ['quads_r', 'quads_l', 'hams_r', 'hams_l', 'glutes_r', 'glutes_l'],
-    'standing_climbing': ['quads_r', 'quads_l', 'glutes_r', 'glutes_l'],
-    'sprinting': ['quads_r', 'quads_l']
-}
-
 # Global variables
 thresholds = {}
 start_time_dict = {}
@@ -63,25 +53,9 @@ bluetooth_connected = False
 bluetooth_serial = None
 connection_lock = threading.Lock()
 collected_data = []  # To store data collected during c@app.route('/receive-data', methods=['POST'])
-sensor_names = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
-sensor_buffers = {name: deque(maxlen=1000) for name in ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']}
 
-'''def receive_data():
-    global collected_data, current_state
-
-    if current_state == 3:
-        # Process data for state 3, including categorization into H, M, L
-        # Make sure to include logic here for processing data in state 3
-        return jsonify({"status": "success", "message": "Data received and processed for state 3."})
-    elif current_state not in [1, 3]:
-        return jsonify({"error": "Not ready to receive data. Current state does not allow data reception."}), 403
-    # Include your existing logic for state 1 and other states herealibration
-calibration_data_global={}
-should_save_thresholds = False # Flag to control saving of thresholds
-# Variable to indicate readiness to process data
-data_processing_ready = False
-start_time_dict = {}  # Dictionary to track start times for state 1
-thresholds = {}'''
+# Sensor names should be consistent and defined globally
+SENSOR_NAMES = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
 
 def bluetooth_communication():
     global current_state, collected_data, bluetooth_connected
@@ -93,7 +67,7 @@ def bluetooth_communication():
                 if current_state == 1:
                     if not start_time:  # Start timer when entering state 1
                         start_time = time.time()
-                    elif time.time() - start_time > 10:
+                    elif time.time() - start_time > 30:
                         # After 10 seconds in state 1, stop collecting data
                         current_state = None  # Or transition to a different state as needed
                         collected_data = []  # Optionally clear collected data
@@ -118,74 +92,84 @@ def bluetooth_communication():
         # Cleanup or final actions when stopping communication
         pass
 
-def read_and_store_data(sensor_values=None):
-    global collected_data, calibration_data_global, current_state
-    if sensor_values is None:
-        sensor_values = []
-
-    num_sensors = len(sensor_names)
-
-    # Log the received sensor values for debugging
-    #print(f"Received sensor values: {sensor_values}")
-
-    if len(sensor_values) % num_sensors != 0:
-        print(f"Warning: Received {len(sensor_values)} sensor values, which does not evenly divide by {num_sensors} sensors.")
-    else:
-        # Process sensor values
-        categorized_data = [] if current_state == 3 else None
-
-        for i, value in enumerate(sensor_values):
-
-            sensor_name = sensor_names[i % num_sensors]
-            sensor_ranges = calibration_data_global.get(sensor_name, {})
-
-            if current_state == 3:
-                category = convert_to_category(value, sensor_ranges) if current_state == 3 else 'N/A'
-                categorized_data.append((sensor_name, value, category))  # Include sensor_name in the tuple
-            if i < len(collected_data):
-                collected_data[i].append(value)
-            else:
-                print(f"Warning: Received more sensor values than expected ({len(sensor_values)}).")
-
-            if current_state == 3:
-                for sensor_name, value, category in categorized_data:
-                    print(f"{sensor_name}: Value: {value}, Category: {category}")
-            elif current_state == 1:
-                pass
-
-
-# Retrieve calibration data from Firebase
 def retrieve_calibration_data(training_id):
-    global calibration_data_global  # Declare the use of the global variable
-    print(f"Attempting to retrieve calibration data for training ID: {training_id}")
-    ref = db.reference(f'users/{session.get("user_id")}/Calibration/Training/{training_id}/Thresholds')
-    calibration_data_global = ref.get()
-    if calibration_data_global:
-        print("Calibration data retrieved successfully.")
-        print("Calibration data:", calibration_data_global)
-    else:
-        print("Failed to retrieve calibration data.")
-    return calibration_data_global
+    global calibration_data_global
+    user_id = session.get("user_id")
+
+    # Check if user_id is set in the session
+    if not user_id:
+        logging.error("User ID is not set in session.")
+        return None
+
+    training_id_to_name = {
+        '1': 'Sprinting',
+        '2': 'Standing Climbing',
+        '3': 'Seated Climbing',
+        # Add more mappings as needed
+    }
+
+    training_name = training_id_to_name.get(str(training_id))
+    if not training_name:
+        print(f"No mapping found for training ID: {training_id}")
+        return None
+
+    # Attempt to retrieve calibration data from Firebase using training_name
+    logging.info(f"Attempting to retrieve calibration data for user ID: {user_id}, training name: {training_name}")
+    try:
+        # Note the change here: using training_name in the path
+        ref = db.reference(f'users/{user_id}/Calibration/Training/{training_name}/Thresholds')
+        calibration_data_global = ref.get()
+
+        # Check if the data is successfully retrieved
+        if calibration_data_global:
+            logging.info("Calibration data retrieved successfully.")
+            logging.debug(f"Calibration data: {calibration_data_global}")
+        else:
+            logging.warning(f"Calibration data not found for user ID: {user_id}, training name: {training_name}")
+        return calibration_data_global
+    except Exception as e:
+        logging.error(f"Failed to retrieve calibration data from Firebase using training name: {e}")
+        return None
+
 
 # Convert sensor values to categories
 def convert_to_category(value, ranges):
+    logging.debug(f"Converting value: {value} using ranges: {ranges}")
     try:
         if not ranges:
-            raise ValueError(f"Empty ranges provided for value: {value}")
+            raise ValueError("Empty ranges provided.")
+        high_threshold = ranges.get('high', (0, float('inf')))
+        medium_threshold = ranges.get('medium', (0, float('inf')))
 
-        # Assuming 'ranges' contains 'low', 'medium', and 'high' keys with their respective value ranges.
-        if value >= ranges['high'][0] and value <= ranges['high'][1]:
+        if value >= high_threshold[0]:
             return 'HIGH'
-        elif value >= ranges['medium'][0] and value <= ranges['medium'][1]:
+        elif medium_threshold[0] <= value <= medium_threshold[1]:
             return 'MEDIUM'
-        elif value >= ranges['low'][0] and value <= ranges['low'][1]:
+        elif 'low' in ranges and ranges['low'][0] <= value <= ranges['low'][1]:
             return 'LOW'
         else:
             return 'NOT ACTIVATED'
+    except Exception as e:
+        logging.error(f"Error in convert_to_category: {e}")
+        return 'ERROR'  # Return 'ERROR' or similar to indicate a problem
 
-    except KeyError as e:
-        print(f"KeyError accessing range: {e}, with ranges: {ranges}")
-        raise  # Re-raise the exception or handle it as appropriate
+
+def calculate_median_frequency(sensor_buffer):
+    fs = 1000  # Sampling frequency, adjust as needed
+    nperseg = len(sensor_buffer)  # Use the entire buffer length as one segment
+    noverlap = int(nperseg * 0.25)  # Example: 25% overlap
+
+    # Ensure noverlap is less than nperseg
+    if noverlap >= nperseg:
+        noverlap = nperseg - 1
+
+    f, Pxx = welch(sensor_buffer, fs=fs, window='tukey', nperseg=nperseg, noverlap=noverlap, nfft=nperseg)
+    cumulative_power = np.cumsum(Pxx)
+    total_power = cumulative_power[-1]
+    median_freq = f[np.searchsorted(cumulative_power, total_power / 2)]
+
+    return median_freq
+
 
 def start_bluetooth_thread():
     global bluetooth_thread, start_time
@@ -202,232 +186,188 @@ training_id = None  # Initialize training_id as a global variable
 
 def calibration_mode():
     global collected_data, user_id, training_id, should_save_thresholds, thresholds
-    if not collected_data or not all(collected_data):
-        print("No data collected.")
-        return
 
+    logging.info(f"Starting calibration mode with user_id: {user_id}, training_id: {training_id}")
+
+    print(f"Debug: collected_data at start of calibration_mode: {collected_data}")
+
+    if not collected_data:  # Check if collected_data is not empty
+        logging.warning("No sensor data collected for calibration.")
+        print("Calibration mode exited: No sensor data collected.")
+        return  # Exit the function if there is no data
+
+    # Reset the thresholds dictionary to avoid using old data
     thresholds = {}
 
-    # Define custom sensor names
-    sensor_names = {
-        'sensor_1': 'R_quads',
-        'sensor_2': 'R_hams',
-        'sensor_3': 'R_glutes',
-        'sensor_4': 'L_quads',
-        'sensor_5': 'L_hams',
-        'sensor_6': 'L_glutes',
-    }
+    # Define custom sensor names if necessary, or use SENSOR_NAMES directly
+    sensor_names = SENSOR_NAMES
 
-    # Iterate over each sensor's collected data
+    # Assuming collected_data is a list of sensor values for simplicity
+    # This should be adapted based on the actual structure of collected_data
     for i, sensor_data in enumerate(collected_data):
-        sensor_key = f'sensor_{i + 1}'
-        if not sensor_data:  # Skip if no data collected for this sensor
-            print(f"No data collected for {sensor_names.get(sensor_key, sensor_key)}.")
+        sensor_name = sensor_names[i % len(sensor_names)]
+        if not sensor_data:
+            logging.warning(f"No data collected for sensor {sensor_name}.")
             continue
 
+        # Your logic to calculate the thresholds based on sensor_data goes here
         max_value = max(sensor_data)
         activation_threshold = int(round(max_value * 0.10))
-        medium_value = int(round(max_value * 2 / 3))
+        medium_value = int(round(max_value * 0.66))  # Two-thirds of max_value
 
-        # Assuming you want to define ranges based on calculated thresholds
-        high_range = (medium_value, max_value)
+        # Determine mode within the high range
+        high_values = [value for value in sensor_data if value >= medium_value]
+        high_value_mode = Counter(high_values).most_common(1)[0][0] if high_values else medium_value
 
-        # mode within the high range
-        high_values = [value for data_list in collected_data for value in data_list if high_range[0] <= value <= high_range[1]]
-        high_value_mode = Counter(high_values).most_common(1)[0][0] if high_values else None
+        # Calculate increments for the new range
+        increment = int(round((high_value_mode - activation_threshold) / 3))
 
-        # set new high val from mode within high range
-        new_high_value = high_value_mode
+        # Define the ranges
+        not_activated_range = (0, activation_threshold)
+        low_range = (activation_threshold, activation_threshold + increment)
+        medium_range = (activation_threshold + increment, high_value_mode - increment)
+        high_range = (high_value_mode - increment, high_value_mode)
 
-        # increment for the new range
-        increment = int(round((new_high_value - activation_threshold) / 3))
-
-        # new ranges (final)
-        not_activated_range = (0, activation_threshold - 1)
-        new_low_range = (activation_threshold, activation_threshold + increment)
-        new_medium_range = (activation_threshold + increment + 1, activation_threshold + 2 * increment)
-        new_high_range = (activation_threshold + 2 * increment + 1, new_high_value)
-
-        # Use custom sensor names
-        sensor_name = sensor_names.get(sensor_key, sensor_key)
-
-        # Store the threshold ranges for this sensor with custom sensor names
+        # Store the threshold ranges for this sensor
         thresholds[sensor_name] = {
             'not_activated': not_activated_range,
-            'low': new_low_range,
-            'medium': new_medium_range,
-            'high': new_high_range
+            'low': low_range,
+            'medium': medium_range,
+            'high': high_range
         }
+
+    if thresholds:
+        # Store thresholds in the session
+        session['thresholds'] = thresholds
+        session.modified = True  # Ensure the session is marked as modified
+        logging.info(f"Calibration data calculated and stored in session: {thresholds}")
+        print(f"Computed threshold values: {thresholds}")
+    else:
+        logging.warning("Calibration mode did not result in any thresholds data.")
+        print("No thresholds computed.")
+
 
 # Saving calibration data to firebase
 def save_thresholds_to_firebase(user_id, training_id, thresholds):
-    ref = db.reference(f'/users/{user_id}/Calibration/Training/{training_id}')
-    ref.update({
-        'Thresholds': thresholds
-    })
-    print("Thresholds saved to Firebase.")
+    try:
+        ref = db.reference(f'/users/{user_id}/Calibration/Training/{training_id}')
+        ref.update({'Thresholds': thresholds})
+        logging.info("Thresholds saved to Firebase for user_id: %s, training_id: %s", user_id, training_id)
+    except Exception as e:
+        logging.error("Failed to save thresholds to Firebase: %s", e)
+        raise
 
-#Saving each data point during training
-def save_trainmode_to_firebase(session, user_id, training_id,sensor_name, value, category):
-    # Define the Firebase reference path based on category
-    ref_path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}/{category}'
+
+def save_trainmode_to_firebase(user_id, training_id, sensor_name, value, category, median_freq=None):
+    training_id_to_name = {
+        '1': 'Sprinting',
+        '2': 'Standing Climbing',
+        '3': 'Seated Climbing',
+        # Add more mappings as needed
+    }
+
+    training_name = training_id_to_name.get(str(training_id))
+    if not user_id or not training_id:
+        print("Error: user_id or training_id is None. Cannot save data to Firebase.")
+        return
+
+    ref_path = f'/users/{user_id}/TrainingMode/{training_name}/{sensor_name}'
     ref = db.reference(ref_path)
+    timestamp = int(time.time() * 1000)
+    data_to_save = {'value': value, 'category': category}
 
-    # Save data point with a timestamp as the key or any unique identifier
-    timestamp = int(time.time() * 1000)  # Using current time in milliseconds as a unique identifier
-    ref.child(str(timestamp)).set({
-        'value': value,
-    })
-    print(f"Saved {sensor_name} data to Firebase under {category} category.")
+    ref.child('muscle_distribution').child(str(timestamp)).set(data_to_save)
+    print(f"Saved {sensor_name} data to Firebase with value {value} and category {category}.")
 
-def fetch_high_counts_for_muscle_group(training_id, sensor_name, category="HIGH"):
-    # Construct the path to the muscle group data
-    path = f'/users/{user_id}/Training/{training_id}/{sensor_name}/HIGH'
-
-    # Get a reference to the Firebase Realtime Database
-    ref = db.reference(path)
-
-    # Fetch the data
-    data = ref.get()
-    if not data:
-        print(f"No data found for {sensor_name}")
-    return len(data)  # Return the count of 'HIGH' data points
+    if median_freq is not None:
+        if median_freq is not None:
+            ref.child('median_frequency').child(str(timestamp)).set({'value': median_freq})
+            print(f"Saved median frequency: {median_freq} for {sensor_name} to Firebase under timestamp {timestamp}.")
 
 
-def calculate_percentage_high(high_count, total_count):
-    return (high_count / total_count * 100) if total_count > 0 else 0
-# Function to calculate the percentage of 'HIGH' activation for each muscle group
-def calculate_percentage_high(training_ID, sensor_name):
-    percentages = {}
-    for sensor_name in sensor_name:
-        high_count = fetch_high_counts(training_id, sensor_name)
-        # Assuming you also have a function to fetch the total counts, not shown here
-        total_count = fetch_total_counts(training_id, sensor_name)
-        percentage = (high_count / total_count * 100) if total_count > 0 else 0
-        percentages[sensor_name] = percentage
-    return percentages
-
-def fetch_total_counts(training_id, sensor_name):
-    # Construct the path to the muscle group data
-    path = f'/users/{user_id}/Training/{training_id}/{sensor_name}'
-
-    # Get a reference to the Firebase Realtime Database
-    ref = db.reference(path)
-
-    # Fetch the data
-    data = ref.get()
-    if not data:
-        return 0  # No data for the muscle group
-
-    # Count the total number of entries
-    total_count = sum(len(category_data) for category_data in data.values() if isinstance(category_data, dict))
-
-    return total_count
-
-
-# Main function that ties everything together
-def main_function():
-    # Define the training type - this could come from user input, a database query, etc.
-    selected_training_type = 'standing_climbing'  # Example training type
-
-    # Check that the selected training type is in the training goals
-    if selected_training_type not in training_goals:
-        raise ValueError(f"Training type '{selected_training_type}' is not recognized.")
-
-    # Calculate the percentage of 'HIGH' activation for each muscle group
-    sensor_name = training_goals[selected_training_type]
-    percentages = calculate_percentage_high(selected_training_type, muscle_groups)
-
-    # Display the results
-    for muscle_group, percentage in percentages.items():
-        print(f"{sensor_name}: {percentage:.2f}% HIGH")
-def save_post_analysis_results(session_id, analysis_data):
-    # Save the post-analysis data to Firebase under the session ID
-    results_ref = db.reference(f'Training/{session_id}/post_analysis_results')
-    results_ref.set(analysis_data)
-
-def calculate_median_frequency(segment):
-    fs = 1000  # Sampling frequency
-    f, Pxx = welch(segment, fs=fs, window='hanning', nperseg=len(segment), noverlap=len(segment)//2)
-    cumsum = np.cumsum(Pxx)
-    total_power = cumsum[-1]
-    median_freq = f[np.searchsorted(cumsum, total_power / 2)]
-    return median_freq
-
+sensor_buffers = {sensor_name: [] for sensor_name in SENSOR_NAMES}
 @app.route('/receive-data', methods=['POST'])
 def receive_data():
-    global collected_data, current_state, calibration_data_global, sensor_buffers
-
-    # Check the current state at the very beginning
+    global collected_data, current_state, start_time_dict, sensor_buffers, median_frequencies
+    # Check current state at the very beginning
     if current_state not in [1, 3]:
         return jsonify({"error": "Not ready to receive data. Current state does not allow data reception."}), 403
 
-    # Fetching data from request
     data = request.get_json()
     if 'sensor_values' not in data:
         return jsonify({"error": "Missing sensor_values"}), 400
 
-    # Processing sensor values
+    # Extract sensor values and convert them to integers
     sensor_values_string = data['sensor_values']
     sensor_values = [int(val) for val in sensor_values_string.split('/') if val.isdigit()]
 
-    # Ensuring that we receive data for all sensors
-    if len(sensor_values) != len(sensor_names):
-        return jsonify({"error": f"Expected {len(sensor_names)} sensor values, received {len(sensor_values)}"}), 400
+    with connection_lock:
+        # Check the state and process accordingly
+        if current_state == 1:
+            if 'state_1_start_time' not in start_time_dict:
+                # Mark the start time for state 1
+                start_time_dict['state_1_start_time'] = time.time()
 
-    # Variable to store median frequencies
-    median_frequencies = {}
+            # Collect data for calibration
+            collected_data.append(sensor_values)
+            print(f"Collected data for calibration: {sensor_values}")
 
-    # State 3 processing
-    if current_state == 3:
-        categorized_data = []
-        for i, value in enumerate(sensor_values):
-            sensor_name = sensor_names[i % len(sensor_names)]
-            sensor_ranges = calibration_data_global.get(sensor_name, {})
-            category = convert_to_category(value, sensor_ranges)
-            categorized_data.append((sensor_name, value, category))
+            # Check if 30 seconds have passed since entering state 1
+            if time.time() - start_time_dict['state_1_start_time'] >= 30:
+                # Perform calibration if 30 seconds have elapsed
+                calibration_mode()
+                # Transition to a different state to stop receiving data for calibration
+                current_state = 2  # Assuming state 2 is a state where data reception is not allowed for calibration
+                print(f"Data reception in state 1 halted as 30 seconds have elapsed.")
+                return jsonify({"status": "success", "message": "Calibration complete, no longer receiving data for calibration."})
 
-            # Saving to Firebase could be a separate function call
-            save_trainmode_to_firebase(session, user_id, training_id, sensor_name, value, category)
+            return jsonify({"status": "success", "message": "Data received and added to calibration queue."})
 
-            # Append the current value to the respective sensor buffer for median frequency calculation
-            sensor_buffers[sensor_name].append(value)
+        elif current_state == 3:
+            categorized_data = []
+            median_frequencies = {}
 
-            # Check if enough data is collected to calculate median frequency
-            if len(sensor_buffers[sensor_name]) == 1000:  # Assuming 1000 samples represent 1 second of data
-                median_freq = calculate_median_frequency(list(sensor_buffers[sensor_name]))
-                median_frequencies[sensor_name] = median_freq
+            for i, value in enumerate(sensor_values):
+                sensor_name = SENSOR_NAMES[i % len(SENSOR_NAMES)]
+                sensor_ranges = calibration_data_global.get(sensor_name, {})
 
-                # After calculating the median frequency, reset the buffer
-                sensor_buffers[sensor_name].clear()
+                category = convert_to_category(value, sensor_ranges)
+                sensor_buffers[sensor_name].append(value)
 
-        # Output categorized data to the console or log
-        for sensor_name, value, category in categorized_data:
-            print(f"{sensor_name}: Value: {value}, Category: {category}")
+                if len(sensor_buffers[sensor_name]) >= 1000:  # Update this value as needed
+                    median_freq = calculate_median_frequency(sensor_buffers[sensor_name])
+                    median_frequencies[sensor_name] = median_freq
+                    save_trainmode_to_firebase(user_id, training_id, sensor_name, value, category, median_freq)
+                    sensor_buffers[sensor_name].clear()  # Clear the buffer after median frequency calculation
+                else:
+                    save_trainmode_to_firebase(user_id, training_id, sensor_name, value, category)
 
-    # Append the new sensor values to the collected_data list
-    collected_data.append(sensor_values)
+                categorized_data.append((sensor_name, value, category))
 
-    # Return a success response with any median frequencies calculated
-    return jsonify({
-        "status": "success",
-        "message": "Data received and processed.",
-        "median_frequencies": median_frequencies if median_frequencies else "Insufficient data for median frequency calculation"
-    })
+            return jsonify({
+                "status": "success",
+                "message": "Training data received and processed.",
+                "median_frequencies": median_frequencies
+                })
 
-# Define your Flask app setup and other routes here
+        else:
+            logging.error("Data not processed due to current state restrictions.")
+            return jsonify({"error": "Data not processed due to current state restrictions."}), 403
+
 @app.route('/api/userId', methods=['POST'])
 def receive_user_data():
     global user_id, training_id
+    #print(f"Raw data received: {request.data}")  # Log raw data
+    #data = request.get_json()
     data = request.json
+    #print(f"JSON data received: {data}")  # Log JSON data
     user_id = data.get('userId')
     training_id = data.get('trainingId')
 
     # Store user_id in session
     session['user_id'] = user_id
 
-    # Call the calibration_mode() function with user_id
-    calibration_mode()
+
 
     # You can now use session['user_id'] to access the user_id in other routes
     print("Received user ID:", session.get('user_id'))
@@ -439,16 +379,24 @@ def receive_user_data():
 @app.route('/confirm-save', methods=['POST'])
 def confirm_save():
     global should_save_thresholds, user_id, training_id, thresholds
-    # Logging the values
+    try:
+        # Log the current state of the variables
+        logging.info(f"should_save_thresholds: {should_save_thresholds}, user_id: {user_id}, training_id: {training_id}")
 
-    if should_save_thresholds and user_id:
+        # Print the current threshold values, whether empty or not
+        print(f"Current threshold values: {thresholds}")
 
-        print("Saving calibration data based on user confirmation.")
-        save_thresholds_to_firebase(user_id, training_id, thresholds)
-        should_save_thresholds = False  # Reset flag after saving
-        return jsonify({"message": "Calibration data saved successfully."})
-    else:
-        return jsonify({"message": "Save operation not authorized or no data to save."}), 400
+        # Check if the save flag and user_id and training_id are set, but do not check thresholds
+        if should_save_thresholds and user_id and training_id:
+            logging.info("Attempting to save calibration data to Firebase, even if thresholds are empty.")
+            save_thresholds_to_firebase(user_id, training_id, thresholds)
+            should_save_thresholds = False  # Reset flag after saving
+            return jsonify({"message": "Calibration data saved successfully."})
+        else:
+            return jsonify({"message": "Save operation not authorized or required data missing."}), 400
+    except Exception as e:
+        logging.error(f"Exception occurred while saving to Firebase: {e}")
+        return jsonify({"error": "An internal server error occurred."}), 500
 
 @app.route('/set-save-flag', methods=['POST'])
 def set_save_flag():
@@ -456,34 +404,6 @@ def set_save_flag():
     data = request.json
     should_save_thresholds = data.get('save', False)
     return jsonify({"message": "Flag set successfully", "shouldSave": should_save_thresholds})
-
-@app.route('/start-calibration', methods=['POST'])
-def start_calibration():
-    global current_state, collected_data
-    current_state = 1
-    collected_data = []  # Reset collected data
-    threading.Thread(target=collect_data).start()
-    return jsonify({"message": "Calibration started."})
-
-'''@app.route('/stop-and-process', methods=['POST'])
-def stop_and_process():
-        # Assume the POST request includes the session ID for identifying the training session
-        data = request.get_json()
-        session_id = data.get('session_id')
-        if not session_id:
-            return jsonify({"message": "Session ID is required."}), 400
-
-        # Perform post-analysis calculations
-        selected_training, sensor_data = fetch_session_data(session_id)
-        sensor_name = training_goals[selected_training]
-        percentages = calculate_percentage_high(selected_training, sensor_name)
-
-        # Optionally, save the post-analysis results to Firebase
-        save_post_analysis_results(session_id, percentages)
-
-        # Return the analysis results
-        return jsonify({"message": "Post-analysis completed.", "percentages": percentages})'''
-
 
 @app.route('/reset-timer', methods=['POST'])
 def reset_timer():
@@ -534,26 +454,27 @@ def set_state_2():
 
 @app.route('/set-state-3', methods=['POST'])
 def set_state_3():
-    global current_state, collected_data, calibration_data_global
+    global current_state, collected_data, calibration_data_global, user_id, training_id
     data = request.json
-    print("Data received in set-state-3:", data)  # Debug print
 
-    training_type = data.get('trainingType')
-    print("Training type received:", training_type)  # Debug print
+    # Update global variables with the data received from the request
+    user_id = data.get('userId')
+    training_id = data.get('trainingType')
 
-    if not training_type:
-        return jsonify({"error": "Missing training type in request."}), 400
+    # Log for debugging
+    print(f"Received user ID: {user_id}, training ID: {training_id}")
 
-    # Retrieve calibration data for the selected training type
-    calibration_data_global = retrieve_calibration_data(training_type)
+    if not user_id or not training_id:
+        return jsonify({"error": "Missing userId or trainingType"}), 400
 
+    calibration_data_global = retrieve_calibration_data(training_id)
     if not calibration_data_global:
-        return jsonify({"error": "Failed to retrieve calibration data or invalid training type."}), 400
+        return jsonify({"message": "Failed to retrieve calibration data or invalid training type."}), 400
 
     current_state = 3
-    collected_data = [[] for _ in range(6)]  # Reset collected data for new session
-    start_bluetooth_thread()  # Ensure Bluetooth thread is running
-    return jsonify({'message': 'State 3 set, training mode started, calibration data retrieved'})
+    collected_data = []  # Reset or initialize collected data
+    start_bluetooth_thread()
+    return jsonify({'message': 'Training mode started, calibration data retrieved successfully.'})
 
 
 
