@@ -224,9 +224,9 @@ def calibration_mode():
 
         # Define the ranges
         not_activated_range = (0, activation_threshold)
-        low_range = (activation_threshold, activation_threshold + increment)
-        medium_range = (activation_threshold + increment, high_value_mode - increment)
-        high_range = (high_value_mode - increment, high_value_mode)
+        low_range = (activation_threshold + 1, activation_threshold + increment)
+        medium_range = (activation_threshold + increment + 1, high_value_mode - increment)
+        high_range = (high_value_mode - increment + 1, high_value_mode)
 
         # Store the threshold ranges for this sensor
         thresholds[sensor_name] = {
@@ -259,19 +259,11 @@ def save_thresholds_to_firebase(user_id, training_id, thresholds):
 
 
 def save_trainmode_to_firebase(user_id, training_id, sensor_name, value, category, median_freq=None):
-    training_id_to_name = {
-        '1': 'Sprinting',
-        '2': 'Standing Climbing',
-        '3': 'Seated Climbing',
-        # Add more mappings as needed
-    }
-
-    training_name = training_id_to_name.get(str(training_id))
     if not user_id or not training_id:
         print("Error: user_id or training_id is None. Cannot save data to Firebase.")
         return
 
-    ref_path = f'/users/{user_id}/TrainingMode/{training_name}/{sensor_name}'
+    ref_path = f'/users/{user_id}/TrainingMode/{training_id}/{sensor_name}'
     ref = db.reference(ref_path)
     timestamp = int(time.time() * 1000)
     data_to_save = {'value': value, 'category': category}
