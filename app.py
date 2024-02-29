@@ -43,6 +43,13 @@ firebase_admin.initialize_app(cred, {
     'databaseURL': os.getenv('FIREBASE_DATABASE_URL')
 })
 
+# Define your training goals for each training type
+training_goals = {
+    3: ['R_quads', 'L_quads', 'R_hams', 'L_hams', 'R_glutes', 'L_glutes'],
+    2: ['R_quads', 'L_quads', 'R_hams', 'L_hams', 'R_glutes', 'L_glutes'],
+    1: ['R_quads', 'L_quads', 'R_hams', 'L_hams', 'R_glutes', 'L_glutes']
+}
+
 # Global variables
 thresholds = {}
 start_time_dict = {}
@@ -53,7 +60,7 @@ bluetooth_connected = False
 bluetooth_serial = None
 connection_lock = threading.Lock()
 collected_data = []  # To store data collected during c@app.route('/receive-data', methods=['POST'])
-
+is_fetching_data = True
 # Sensor names should be consistent and defined globally
 SENSOR_NAMES = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
 
@@ -223,10 +230,14 @@ def calibration_mode():
         increment = int(round((high_value_mode - activation_threshold) / 3))
 
         # Define the ranges
+        '''not_activated_range = (0, activation_threshold)
+        low_range = (activation_threshold + 1 , activation_threshold + increment)
+        medium_range = (activation_threshold + increment, high_value_mode - increment)
+        high_range = (high_value_mode - increment, high_value_mode)'''
         not_activated_range = (0, activation_threshold)
         low_range = (activation_threshold + 1, activation_threshold + increment)
-        medium_range = (activation_threshold + increment + 1, high_value_mode - increment)
-        high_range = (high_value_mode - increment + 1, high_value_mode)
+        medium_range = (low_range[1] + 1, high_value_mode - increment)
+        high_range = (medium_range[1] + 1, high_value_mode)
 
         # Store the threshold ranges for this sensor
         thresholds[sensor_name] = {
@@ -245,6 +256,74 @@ def calibration_mode():
     else:
         logging.warning("Calibration mode did not result in any thresholds data.")
         print("No thresholds computed.")
+
+
+def fetch_all_data_points(user_id, training_id):
+    try:
+        # Construct the database reference path
+        ref_path = f'/users/{user_id}/TrainingMode/{training_id}'
+        # Get a reference to the Firebase Realtime Database
+        ref = db.reference(ref_path)
+        # Fetch the data
+        training_mode_data = ref.get()
+
+        # Initialize a dictionary to store the total data points count for each sensor
+        total_data_points = {}
+
+        for sensor, sensor_data in training_mode_data.items():
+            # Ensure 'muscle_distribution' key exists to avoid KeyError
+            if 'muscle_distribution' in sensor_data:
+                # Count the total number of data points for the current sensor
+                total_data_points[sensor] = len(sensor_data['muscle_distribution'])
+            else:
+                # If no muscle_distribution data is found, set the count to 0
+                total_data_points[sensor] = 0
+
+        logging.info(f"Fetched all data points for user: {user_id}, training ID: {training_id}")
+        return total_data_points
+    except Exception as e:
+        logging.error(f"Failed to fetch all data points for user: {user_id}, training ID: {training_id}: {e}")
+        return None
+
+
+
+def fetch_and_count_high_categories_with_percentage(user_id, training_id):
+    try:
+        # Fetch the total data points for each muscle group
+        total_data_points = fetch_all_data_points(user_id, training_id)
+
+        # Fetch the training mode data
+        ref_path = f'/users/{user_id}/TrainingMode/{training_id}'
+        ref = db.reference(ref_path)
+        training_mode_data = ref.get()
+
+        # Initialize count for each muscle group based on the training goal
+        relevant_muscle_groups = training_goals.get(training_id, [])
+        high_counts = {muscle: 0 for muscle in relevant_muscle_groups}
+        high_percentage = {muscle: 0.0 for muscle in relevant_muscle_groups}
+
+        logging.debug(f"Relevant muscle groups for {training_id}: {relevant_muscle_groups}")
+
+        for sensor, sensor_data in training_mode_data.items():
+            # Process only relevant sensors
+            if sensor in relevant_muscle_groups:
+                # Count 'HIGH' occurrences
+                high_counts[sensor] += sum(1 for data_point in sensor_data.get('muscle_distribution', {}).values() if data_point.get('category') == 'HIGH')
+
+                # Calculate the percentage of 'HIGH' data points
+                if total_data_points.get(sensor, 0) > 0:
+                    high_percentage[sensor] = round((high_counts[sensor] / total_data_points[sensor]) * 100)  # Calculate and round the percentage of 'HIGH' data points
+
+
+                logging.debug(f"{sensor}: High count = {high_counts[sensor]}, Total data points = {total_data_points.get(sensor, 0)}, Percentage = {high_percentage[sensor]:.2f}%")
+
+        logging.info(f"High counts and percentages for user: {user_id}, training ID: {training_id}: {high_percentage}")
+
+        return high_percentage
+    except Exception as e:
+        logging.error(f"Failed to fetch and calculate HIGH percentages: {e}")
+        return None
+
 
 
 # Saving calibration data to firebase
@@ -278,6 +357,21 @@ def save_trainmode_to_firebase(user_id, training_id, sensor_name, value, categor
 
 
 sensor_buffers = {sensor_name: [] for sensor_name in SENSOR_NAMES}
+
+def save_high_percentage_to_firebase(user_id, training_id, high_counts):
+    try:
+        # Define the database path where the percentages will be saved
+        # This path can be adjusted based on your database structure
+        ref_path = f'/users/{user_id}/PostAnalysisResults/{training_id}/percentages'
+        ref = db.reference(ref_path)
+
+        # Update the database with the high percentage data
+        ref.set(high_counts)
+
+        logging.info(f"Successfully saved HIGH percentages for user: {user_id}, training ID: {training_id}")
+    except Exception as e:
+        logging.error(f"Failed to save HIGH percentages to Firebase for user: {user_id}, training ID: {training_id}")
+
 @app.route('/receive-data', methods=['POST'])
 def receive_data():
     global collected_data, current_state, start_time_dict, sensor_buffers, median_frequencies
@@ -399,10 +493,13 @@ def set_save_flag():
 
 @app.route('/reset-timer', methods=['POST'])
 def reset_timer():
-    global start_time, current_state
+    global start_time, current_state, is_fetching_data
     start_time = None  # Or reset as appropriate for your logic
     current_state = None  # Optionally reset the current state
     # Implement any additional reset logic here
+
+    is_fetching_data = False  # Stop fetching data
+
     return jsonify({'message': 'Timer and state reset successfully'})
 
 
@@ -467,13 +564,48 @@ def set_state_3():
     collected_data = []  # Reset or initialize collected data
     start_bluetooth_thread()
     return jsonify({'message': 'Training mode started, calibration data retrieved successfully.'})
+@app.route('/stop-and-fetch', methods=['POST'])
+def stop_and_fetch():
+    global current_state
+    data = request.get_json()
+    user_id = data.get('userId')
+    training_id = data.get('trainingId')
+    '''training_type = data.get('trainingType', None)  # Optional; default to None if not provided
+'''
+    if not user_id or not training_id:
+        logging.error("User ID or Training ID is missing from the request. Received data: " + str(data))
+        return jsonify({"error": "user_id or training_id is missing"}), 400
 
+        # Additional check for trainingType if necessary
+    if not training_id:
+        logging.warning("Training Type is not provided in the request. Proceeding without it.")
 
+    # Logic to stop data collection
+    current_state = None
+    logging.info(f"Data collection stopped for user: {user_id}, training ID: {training_id}")
 
-@app.route('/get-state', methods=['GET'])
-def get_state():
-    with connection_lock:
-        return jsonify({'state': current_state})
+    # If training_type is provided, fetch the categories and count the HIGH occurrences
+    if training_id:
+        high_counts = fetch_and_count_high_categories_with_percentage(user_id, training_id)
+        if high_counts is not None:
+            save_high_percentage_to_firebase(user_id, training_id, high_counts)
+            logging.info(f"Successfully fetched and counted HIGH categories for user: {user_id}, training ID: {training_id}")
+            return jsonify({"message": "Success", "data": high_counts})
+
+        else:
+            logging.error(f"Failed to fetch and count HIGH categories for user: {user_id}, training ID: {training_id}")
+            return jsonify({"error": "Failed to fetch and count HIGH categories"}), 500
+    else:
+        # If training_type is not provided, just fetch the categories
+        training_mode_categories = fetch_all_data_points(user_id, training_id)
+        if training_mode_categories is not None:
+            logging.info(f"All data fetched for user: {user_id}, training ID: {training_id}")
+            for sensor, categories in training_mode_categories.items():
+                logging.info(f"Data for {sensor}: {categories}")
+            return jsonify(training_mode_categories)
+        else:
+            logging.error(f"Failed to fetch categories for user: {user_id}, training ID: {training_id}")
+            return jsonify({"error": "Failed to fetch TrainingMode categories"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
