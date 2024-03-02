@@ -420,7 +420,7 @@ def receive_data():
                 category = convert_to_category(value, sensor_ranges)
                 sensor_buffers[sensor_name].append(value)
 
-                if len(sensor_buffers[sensor_name]) >= 1000:  # Update this value as needed
+                if len(sensor_buffers[sensor_name]) >= 30:  # Update this value as needed
                     median_freq = calculate_median_frequency(sensor_buffers[sensor_name])
                     median_frequencies[sensor_name] = median_freq
                     save_trainmode_to_firebase(user_id, training_id, sensor_name, value, category, median_freq)
