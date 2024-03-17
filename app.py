@@ -74,7 +74,7 @@ def bluetooth_communication():
                 if current_state == 1:
                     if not start_time:  # Start timer when entering state 1
                         start_time = time.time()
-                    elif time.time() - start_time > 30:
+                    elif time.time() - start_time > 25:
                         # After 10 seconds in state 1, stop collecting data
                         current_state = None  # Or transition to a different state as needed
                         collected_data = []  # Optionally clear collected data
