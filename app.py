@@ -399,7 +399,7 @@ def receive_data():
             print(f"Collected data for calibration: {sensor_values}")
 
             # Check if 30 seconds have passed since entering state 1
-            if time.time() - start_time_dict['state_1_start_time'] >= 30:
+            if time.time() - start_time_dict['state_1_start_time'] >= 100:
                 # Perform calibration if 30 seconds have elapsed
                 calibration_mode()
                 # Transition to a different state to stop receiving data for calibration
