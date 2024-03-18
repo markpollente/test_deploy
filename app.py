@@ -64,6 +64,7 @@ is_fetching_data = True
 # Sensor names should be consistent and defined globally
 SENSOR_NAMES = ['R_quads', 'R_hams', 'R_glutes', 'L_quads', 'L_hams', 'L_glutes']
 
+
 def bluetooth_communication():
     global current_state, collected_data, bluetooth_connected
     start_time = None
@@ -606,6 +607,13 @@ def stop_and_fetch():
         else:
             logging.error(f"Failed to fetch categories for user: {user_id}, training ID: {training_id}")
             return jsonify({"error": "Failed to fetch TrainingMode categories"}), 500
+
+@app.route('/server-state', methods=['GET'])
+def server_state():
+    global current_state
+    return jsonify({"state": current_state})
+
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
