@@ -7,3 +7,4 @@ gunicorn
 Werkzeug
 scipy
 numpy
+cachelib
